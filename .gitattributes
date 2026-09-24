@@ -1,0 +1,8 @@
+# Force LF in the repo so nodes (and any cloner) get clean text regardless of
+# their local core.autocrlf. YAML/recipes/markdown/scripts are text.
+* text=auto eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+*.md text eol=lf
+*.py text eol=lf
+*.sh text eol=lf

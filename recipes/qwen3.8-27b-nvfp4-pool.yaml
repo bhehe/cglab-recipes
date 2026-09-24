@@ -76,7 +76,7 @@ metadata:
   thinking: on
   batch: 8
   context: 65536
-  updated: "2026-09-24"
+  updated: "2026-09-24 (registry publish)"
   # ── KV-MAX CEILING (measured on GB10, 2026-09-21, f909) ──────────────────
   # Same weights, fp8 KV: 68.1 GB KV budget → 557,490 max tokens (dry-run fit).
   # 256K @ C1 BOOTS + SERVES (51.89 GiB KV, 5.59× concurrency headroom).
