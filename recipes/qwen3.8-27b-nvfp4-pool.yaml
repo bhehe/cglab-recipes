@@ -1,0 +1,146 @@
+recipe_version: "2"
+model: nvidia/Qwen3.8-27B-NVFP4
+runtime: atlas
+container: azeezish/atlas-gb10:latest
+max_nodes: 1
+
+metadata:
+  description: |
+    Qwen3.8-27B (nvidia NVFP4, dense hybrid SSM+Attn) — the POOL profile:
+    our custom serving config for a GPU pool of PARALLEL AGENTIC workers.
+
+    RELATIONSHIP TO THE STOCK PROFILES (post `sparkrun update`, 2026-09-18)
+    ------------------------------------------------------------------------
+    All five live atlas profiles serve the SAME nvidia/Qwen3.8-27B-NVFP4 weights
+    (checkpoint changed 2026-09-12; the unsloth-specific provenance in their
+    files is historical only). They differ only in operating point:
+
+      * base        thinking OFF, batch 8,   32k ctx, fp8 KV, MTP K=4
+      * agentic     thinking ON,  batch 1,   32k ctx, bf16 KV, bf16 lm-head
+      * concurrency thinking OFF, batch 128, 2k ctx,  fp8 KV, MTP K-ladder
+                    (certified: C1 23.59 -> C128 478 tok/s, all 4 gates PASS)
+      * bfcl        thinking OFF, batch 1,   32k ctx, tool-calling comparison
+      * dflash2     DFlash2 spec-decode, single-stream only (batched = WIP)
+
+    **`base` is our DEFAULT** — it is the only stock profile that is 32K-context
+    AND batch-8 AND MTP, so it serves all four pool workers concurrently at
+    ~2x our single-stream baseline. This custom recipe is the TEST that the one
+    stock profile does NOT give us: **thinking ON + batch 8 + 64k context**.
+
+    WHY A CUSTOM PROFILE AT ALL
+    ---------------------------
+    The stock set forces a false choice for our workload (non-interactive,
+    parallel, reasoning, 30k–150k context):
+      * agentic is correct (thinking ON + bf16 lm-head) but batch 1 = the
+        bottleneck that serializes our four workers onto one stream.
+      * base/concurrency are parallel but thinking OFF (no reasoning) — and
+        concurrency is capped at 2k context (too small for real coding).
+    So: does thinking ON (which our coding/tool-calling tasks may depend on)
+    SURVIVE batch 8 + 64k context, and is it worth the throughput cost vs base?
+    This recipe is the hypothesis. It must be MEASURED (boot/no-OOM, aggregate
+    tok/s at C1/C2/C4, and a correctness proxy that trajectories still hold),
+    A/B'd against `base`. Do not assume the win.
+
+    MEMORY POSTURE (read before changing batch/context/util)
+    ---------------------------------------------------------
+    The agentic profile documents a REAL boot failure at 0.85 util + batch 2 on
+    the *unsloth* checkpoint (weights 57.4 GB + 44 GB reserve). The nvidia
+    checkpoint is leaner and the base/concurrency profiles prove batch 8 and
+    batch 128 boot fine — so batch 8 x 64k here is expected to boot, but KV is
+    still the binder at 121.7 GB. Levers in priority order: kv fp8 (set), then
+    gpu_memory_utilization, then max_model_len, then max_batch_size. Do not raise
+    batch while context and util are already maxed.
+
+    QUALITY POSTURE
+    ---------------
+    Thinking ON by design (the deliberate divergence from base/concurrency).
+    We DROP the agentic profile's bf16 lm-head pin here — the concurrency
+    profile clears the agentic-webserver gate *without* it (10–14% faster), so
+    for a parallel pool we accept the nvfp4 head and measure correctness rather
+    than pin it. If our coding A/B shows trajectory/argmax degradation, the
+    correction is `lm_head_dtype: bf16` + accept lower throughput (→ agentic).
+
+    ENV STACK (export before serve — no `env:` key in the recipe struct)
+    --------------------------------------------------------------------
+      ATLAS_PREFILL_CODISPATCH=1   # co-schedule chunk-0 prefills (+TTFT)
+      ATLAS_FP8_ROWWISE=1          # native per-row FP8 GDN prefill (+21%)
+      ATLAS_MTP_DCUT_RATIO=1.0     # D-Cut OFF (0.75 default is net-negative C>=8)
+      ATLAS_MTP_K_LADDER=1:3,2:1,4:2,8:2,16:1  # width-adaptive draft depth
+    (codispatch+rowwise ~+21% prefill; the K-ladder default costs ~22% at C=2.)
+
+  maintainer: CGF / MyStack
+  category: pool
+  model_params: 27B dense hybrid (48 GDN linear-attn + 16 softmax-attn layers)
+  quantization: NVFP4 (modelopt MIXED_PRECISION — FP8 linear_attn/self_attn, NVFP4 MLP)
+  kv_dtype: fp8
+  thinking: on
+  batch: 8
+  context: 65536
+  updated: "2026-09-24"
+  # ── KV-MAX CEILING (measured on GB10, 2026-09-21, f909) ──────────────────
+  # Same weights, fp8 KV: 68.1 GB KV budget → 557,490 max tokens (dry-run fit).
+  # 256K @ C1 BOOTS + SERVES (51.89 GiB KV, 5.59× concurrency headroom).
+  # 512K does NOT fit (needs ~104 GiB > 68.1 GB budget) — deterministic fail.
+  # This recipe operates at 64K (batch-8 pool); the ceiling permits raising
+  # max_model_len to 262144 for single-stream large-window if needed.
+  # Evidence: Labs/KV-MAX/2026-09-21-kvmax-measured-f909.md
+  kv_max_tokens_measured: 557490
+  kv_max_window_fit: 262144
+  kv_max_window_no_fit: 524288
+  # ── CROSS-REFERENCES ──────────────────────────────────────────────────────
+  # This recipe is PUBLISHED in the cglab registry (first-class @cglab reference).
+  #   registry:  https://github.com/bhehe/cglab-recipes
+  #   qualified: @cglab/qwen3.8-27b-nvfp4-pool
+  #   measured findings (shipped with this registry): findings/qwen3.8-pool-findings.md
+  # CGF source of truth + full context (private):
+  #   recipe file:    Labs/PrimaryLab/sparkrun-recipes/atlas/qwen3.8-27b-nvfp4-pool.yaml
+  #   findings:       Labs/PrimaryLab/benchmarks/Model-Serving-Performance-Findings.md
+  #   design doc:     Recipes/ModelServing/MODEL-SERVING-DESIGN.md
+  #   skill:          .agent/skills/ai/dgx-spark-sparkrun-serving/SKILL.md
+  #   KV-MAX evidence:Labs/KV-MAX/2026-09-21-kvmax-measured-f909.md
+  #   A/B benchmark:  t_570ba14a (board) — settle pool default
+
+defaults:
+  host: 0.0.0.0
+  # Engine port. The house serving lifecycle runs the ENGINE on :8000 and the
+  # LiteLLM PROXY on :4000 (never pass --port 4000 to the engine — it dead-locks
+  # against the proxy). Matched to @official/qwen3.8-27b-fp8-mtp-vllm.
+  port: 8000
+  # REAL working context (our board workers run 30k–150k). Quality above ~24K is
+  # UNCHARACTERIZED on these weights (kernel target effective_context 24576,
+  # unmeasured on 3.8) — a bigger window is "more room before truncation", not
+  # "more usable reasoning". 64k is the honest working headroom; A/B vs base's 32k.
+  max_model_len: 65536
+  # THE DECISIVE LEVER vs agentic (batch 1) — serves our four parallel workers so
+  # the weight read amortizes across them. Not 128 (concurrency's 2k benchmark cap).
+  # If it OOMs, lower THIS first after util/ctx.
+  max_batch_size: 8
+  gpu_memory_utilization: 0.85
+  # fp8 KV halves the KV bytes that batch 8 x 64k would otherwise demand — the
+  # memory lever that makes the above two possible (base/concurrency both use fp8).
+  kv_cache_dtype: fp8
+  # Marconi/SSM snapshot geometry: multi-turn agents re-enter long shared prefixes,
+  # so keep the agentic/base density (64) rather than concurrency's 8.
+  enable_prefix_caching: true
+  ssm_cache_slots: 64
+  ssm_checkpoint_interval: 16
+  # Speculative decode: full MTP draft depth (K=4), matching base/concurrency.
+  speculative: true
+  num_drafts: 3
+  mtp_quantization: bf16
+  # THE HYPOTHESIS — thinking ON in a batch>1 pool. base/concurrency set this true;
+  # we set it false to test whether reasoning survives parallel serving.
+  disable_thinking: false
+  tool_call_parser: qwen3_coder
+  disable_tool_grammar: true
+  # Concurrency-stack efficiency (gate-validated by ssm-state-poisoning in stock):
+  # f16-pool halves the GDN h-state bytes AND cuts the wide-batch reserve.
+  ssm_h_dtype: f16-pool
+  gdn_fused_norm: true
+  ssm_batched_recurrent: true
+  ssm_tail_midchunk: false
+  mtp_gate: force
+  # Batched varlen prefill helps TTFT whenever >1 request arrives together (pool: yes).
+  prefill_varlen_batch: true
+  # A 64k-context wave can take a long wall; 0 = don't cut it mid-flight.
+  request_timeout: 0

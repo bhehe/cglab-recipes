@@ -1,0 +1,5 @@
+registries:
+  - name: cglab
+    description: CGF / DGX-Spark custom sparkrun recipes — the pool profile (thinking ON + batch 8 + 64k fp8 KV) and future throughput/latency variants for the 4-node GB10 pool. Maintained by CGF.
+    recipes: recipes
+    visible: true

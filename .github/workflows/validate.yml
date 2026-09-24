@@ -1,0 +1,23 @@
+name: validate-recipes
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install deps
+        run: pip install pyyaml
+      - name: Install sparkrun (authoritative schema check)
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install sparkrun || echo "sparkrun install failed; structural checks only"
+      - name: Validate every recipe + resolve container refs
+        run: python validate.py
