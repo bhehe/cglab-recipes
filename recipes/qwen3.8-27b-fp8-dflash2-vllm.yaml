@@ -1,0 +1,82 @@
+recipe_version: "2"
+model: Qwen/Qwen3.8-27B-FP8
+runtime: vllm
+container: ghcr.io/spark-arena/dgx-vllm-eugr-nightly:latest
+
+metadata:
+  description: |
+    Qwen3.8-27B-FP8 (native FP8) + DFlash2 draft-model speculative decode (K=7)
+    — the DFLASH-A-B experiment (t_6922315f, a010, 2026-10-07).
+
+    PROVENANCE (single-variable A/B)
+    --------------------------------
+    Byte-identical to qwen3.8-27b-fp8-mtp4-vllm.yaml (a010's live baseline: MTP
+    K=4, util 0.8, 256K, fp8 KV, flashinfer, prefix-cache ON, thinking ON) EXCEPT
+    the one speculative_config line:
+        mtp  ->  {"method":"mtp","num_speculative_tokens":4}
+        dflash -> {"method":"dflash","model":"z-lab/Qwen3.8-27B-DFlash2","num_speculative_tokens":7}
+    Everything else (port 8000, util 0.8, max_model_len 262144,
+    max_num_batched_tokens 16384, kv fp8, flashinfer, tp1/pp1, load-format
+    instanttensor, prefix caching) is UNCHANGED, so the MTP-K4-vs-DFlash2 delta is
+    attributable to the speculative-decode method alone (protocol invariant #1).
+
+    WHY (community research, COMMUNITY-RESEARCH-QWEN38-GB10-2026-10-07.md)
+    ---------------------------------------------------------------------
+    DFlash2 is the single-stream decode king on FP8/vLLM: +65% over MTP K=3
+    (30-32 vs 17-18 tok/s C1, S5 0xBakeer), and FP8 is the ONLY quant that can
+    serve DFlash2 under vLLM (needs an unquantized LM head — NVFP4 checkpoints
+    block it). Drafter z-lab/Qwen3.8-27B-DFlash2 (1.9B params, 5 layers,
+    block_size 8 => K=7). Our image dgx-vllm-eugr-nightly:latest (2026-10-05)
+    ships vllm 0.30.1 with dflash.py (PR #52816) — no image upgrade needed.
+    Drafter pre-cached in the shared /opt/huggingface cache (the container runs
+    HF_HUB_OFFLINE=1). Community: DFlash2 wins at C1-C2 but loses to deeper
+    drafts at C4+; we run C1-C2, so this is the right choice.
+
+    CROSS-REFERENCES
+    ----------------
+    Recipe baseline: Labs/PrimaryLab/sparkrun-recipes/vllm/qwen3.8-27b-fp8-mtp4-vllm.yaml
+    Research:        Labs/PrimaryLab/benchmarks/COMMUNITY-RESEARCH-QWEN38-GB10-2026-10-07.md (F1)
+    Protocol:        Labs/PrimaryLab/benchmarks/_protocol/EXPERIMENT-PROTOCOL.md
+    Findings (registry): findings/qwen3.8-27b-fp8-dflash2-vllm.md
+    Full record:  Labs/PrimaryLab/benchmarks/exp4-dflash2-a010/EXP4-DFLASH2-A010-2026-10-07.json
+    Findings doc: Labs/PrimaryLab/benchmarks/exp4-dflash2-a010/FINDINGS.md
+    Battery/state: exp4-dflash2-a010/c3xnode_battery_a010.py, state_all_20261007_071052.json
+
+    RESULT (2026-10-07, a010, synthetic F-series battery) — ADOPT for C1-C2 agentic serving:
+    C1 179.5 tok/s gen = 1.66x MTP4 (gate >=1.3x), C2 167.9 = 1.49x, C1-CTL 208.9 = 1.94x,
+    C3 104.9 = 0.98x (par -> keep MTP K=4 for 3-stream). 0 API errors / 0 crashes / 0 OOM.
+
+defaults:
+  port: 8000
+  host: 0.0.0.0
+  tensor_parallel: 1
+  pipeline_parallel: 1
+  gpu_memory_utilization: 0.8
+  max_model_len: 262144
+  max_num_batched_tokens: 16384
+  load_format: instanttensor
+  kv_cache_dtype: fp8
+  attention_backend: flashinfer
+  tool_call_parser: qwen3_coder
+  reasoning_parser: qwen3
+  mm_encoder_tp_mode: data
+  speculative_config: '{"method": "dflash", "model": "z-lab/Qwen3.8-27B-DFlash2", "num_speculative_tokens": 7}'
+
+command: |
+  vllm serve {model} \
+    --host {host} \
+    --port {port} \
+    --max-model-len {max_model_len} \
+    --max-num-batched-tokens {max_num_batched_tokens} \
+    --gpu-memory-utilization {gpu_memory_utilization} \
+    --enable-auto-tool-choice \
+    --tool-call-parser {tool_call_parser} \
+    --reasoning-parser {reasoning_parser} \
+    --kv-cache-dtype {kv_cache_dtype} \
+    --load-format {load_format} \
+    --mm-encoder-tp-mode {mm_encoder_tp_mode} \
+    --attention-backend {attention_backend} \
+    --speculative-config '{speculative_config}' \
+    --enable-prefix-caching \
+    -tp {tensor_parallel} \
+    -pp {pipeline_parallel}
